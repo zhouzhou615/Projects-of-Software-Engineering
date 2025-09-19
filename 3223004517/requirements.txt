@@ -1,0 +1,7 @@
+# 论文查重系统依赖包（已安装版本）
+jieba==0.42.1
+scikit-learn==1.7.2
+numpy==2.3.3
+scipy==1.16.2
+joblib==1.5.2
+threadpoolctl==3.6.0
