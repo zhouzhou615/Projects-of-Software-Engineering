@@ -1,16 +1,44 @@
 import argparse
-import jieba
-import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 import sys
+import os
+import functools
+import re
 from utils import read_file, write_result
 
 
-def calculate_similarity(original_text, plagiarized_text):
+# 添加文件内容缓存
+@functools.lru_cache(maxsize=32)
+def cached_read_file(file_path):
+    """带缓存的文件读取函数"""
+    return read_file(file_path)
+
+
+# 添加分词结果缓存
+@functools.lru_cache(maxsize=100)
+def cached_cut_text(text):
+    """带缓存的分词函数 - 针对Windows优化"""
+    import jieba
+    # 在Windows上不使用并行模式
+    return ' '.join(jieba.cut(text))
+
+
+def preprocess_text(text):
+    """
+    文本预处理函数
+    清洗文本，移除标点符号和多余空格
+    """
+    # 移除标点符号
+    text = re.sub(r'[^\u4e00-\u9fa5a-zA-Z0-9\s]', '', text)
+    # 移除多余空格
+    text = re.sub(r'\s+', ' ', text)
+    # 移除首尾空格
+    return text.strip()
+
+
+def calculate_similarity(original_text, plagiarized_text, fast_mode=False):
     """
     计算两段文本的相似度
-    使用TF-IDF向量化和余弦相似度算法
+    使用TF-IDF向量化和余弦相似度算法 - Windows优化版
     """
     # 处理空文本情况
     if not original_text.strip() and not plagiarized_text.strip():
@@ -19,17 +47,43 @@ def calculate_similarity(original_text, plagiarized_text):
     if not original_text.strip() or not plagiarized_text.strip():
         return 0.0
 
+    # 文本预处理
+    original_text = preprocess_text(original_text)
+    plagiarized_text = preprocess_text(plagiarized_text)
+
+    # 检查预处理后的文本是否为空
+    if not original_text or not plagiarized_text:
+        return 0.0
+
+    # 延迟导入第三方库
+    import numpy as np
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+
     try:
-        # 使用jieba进行中文分词
-        original_words = ' '.join(jieba.cut(original_text))
-        plagiarized_words = ' '.join(jieba.cut(plagiarized_text))
+        # 使用缓存的分词函数
+        original_words = cached_cut_text(original_text)
+        plagiarized_words = cached_cut_text(plagiarized_text)
+
+        # # 调试信息 - 打印分词结果的前50个字符
+        # print(f"原文分词预览: {original_words[:50]}...")
+        # print(f"抄袭文分词预览: {plagiarized_words[:50]}...")
     except Exception as e:
         raise Exception(f"分词处理失败: {str(e)}")
 
     try:
-        # 使用TF-IDF向量化文本
-        vectorizer = TfidfVectorizer()
+        # 根据模式选择不同的TF-IDF参数
+        # 对于只有两个文档的情况，需要调整参数
+        vectorizer = TfidfVectorizer(
+            max_features=5000,  # 限制特征数量，提高性能
+            min_df=1,  # 词至少在1个文档中出现
+            max_df=1.0  # 词最多在100%的文档中出现
+        )
+
         tfidf_matrix = vectorizer.fit_transform([original_words, plagiarized_words])
+
+        # 调试信息 - 打印特征数量
+        print(f"TF-IDF特征数量: {len(vectorizer.get_feature_names_out())}")
     except Exception as e:
         raise Exception(f"文本向量化失败: {str(e)}")
 
@@ -48,7 +102,7 @@ def calculate_similarity(original_text, plagiarized_text):
 
 def main():
     """
-    论文查重系统主函数
+    论文查重系统主函数 - Windows优化版
     从命令行接收三个参数：原文文件、抄袭版论文文件、输出答案文件
     """
     # 配置命令行参数（支持默认值，也可手动传入）
@@ -74,6 +128,15 @@ def main():
         default=r'D:\软工\paper_check\3223004517\result.txt',  # 默认输出路径
         help='查重结果输出文件路径'
     )
+
+    # 添加性能分析选项
+    parser.add_argument(
+        '--profile',
+        action='store_true',
+        help='启用性能分析'
+    )
+
+
     try:
         args = parser.parse_args()
 
@@ -81,8 +144,12 @@ def main():
         if not all([args.original_file, args.plagiarized_file, args.output_file]):
             raise Exception("必须提供三个文件路径参数")
 
+        # 检查文件是否存在
+        for file_path in [args.original_file, args.plagiarized_file]:
+            if not os.path.exists(file_path):
+                raise Exception(f"文件不存在: {file_path}")
+
         # 检查文件大小限制（防止内存溢出）
-        import os
         max_file_size = 10 * 1024 * 1024  # 10MB
 
         if os.path.getsize(args.original_file) > max_file_size:
@@ -91,12 +158,27 @@ def main():
         if os.path.getsize(args.plagiarized_file) > max_file_size:
             raise Exception(f"抄袭版文件过大: {os.path.getsize(args.plagiarized_file) / 1024 / 1024:.2f}MB > 10MB")
 
-        # 读取文件内容
-        original_text = read_file(args.original_file)
-        plagiarized_text = read_file(args.plagiarized_file)
+        # 读取文件内容 - 使用缓存版本
+        original_text = cached_read_file(args.original_file)
+        plagiarized_text = cached_read_file(args.plagiarized_file)
 
-        # 计算相似度
-        similarity = calculate_similarity(original_text, plagiarized_text)
+        # 性能分析开关
+        if args.profile:
+            import cProfile
+            import pstats
+            profiler = cProfile.Profile()
+            profiler.enable()
+
+            # 计算相似度
+            similarity = calculate_similarity(original_text, plagiarized_text)
+
+            profiler.disable()
+            stats = pstats.Stats(profiler)
+            stats.sort_stats('cumtime')
+            stats.print_stats(20)  # 打印前20个最耗时的函数
+        else:
+            # 计算相似度
+            similarity = calculate_similarity(original_text, plagiarized_text)
 
         # 写入结果
         write_result(args.output_file, similarity)
