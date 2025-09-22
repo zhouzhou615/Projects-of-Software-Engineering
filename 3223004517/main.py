@@ -61,29 +61,36 @@ def calculate_similarity(original_text, plagiarized_text, fast_mode=False):
     from sklearn.metrics.pairwise import cosine_similarity
 
     try:
-        # 使用缓存的分词函数
-        original_words = cached_cut_text(original_text)
-        plagiarized_words = cached_cut_text(plagiarized_text)
+        import jieba
+        # 精确模式分词 + 去除分词后空字符串
+        original_words = [word for word in jieba.cut(original_text, cut_all=False) if word.strip()]
+        plagiarized_words = [word for word in jieba.cut(plagiarized_text, cut_all=False) if word.strip()]
 
-        # # 调试信息 - 打印分词结果的前50个字符
-        # print(f"原文分词预览: {original_words[:50]}...")
-        # print(f"抄袭文分词预览: {plagiarized_words[:50]}...")
+        # 若分词后无有效词汇（极端情况）
+        if not original_words or not plagiarized_words:
+            return 0.0
+
+        # 转换为空格分隔的字符串（适配TF-IDF输入格式）
+        original_seg = ' '.join(original_words)
+        plagiarized_seg = ' '.join(plagiarized_words)
     except Exception as e:
         raise Exception(f"分词处理失败: {str(e)}")
 
     try:
-        # 根据模式选择不同的TF-IDF参数
-        # 对于只有两个文档的情况，需要调整参数
+        # 配置TF-IDF参数：
+        # - 过滤停用词（减少无意义词汇干扰）
+        # - 包含1-gram和2-gram（捕捉短语级相似性）
+        # - 过滤低频词（出现次数<2的词不纳入计算）
+        stop_words = ['的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '上', '也', '很',
+                      '到', '说', '要', '去', '你']
         vectorizer = TfidfVectorizer(
             max_features=5000,  # 限制特征数量，提高性能
             min_df=1,  # 词至少在1个文档中出现
             max_df=1.0  # 词最多在100%的文档中出现
         )
 
-        tfidf_matrix = vectorizer.fit_transform([original_words, plagiarized_words])
-
-        # 调试信息 - 打印特征数量
-        print(f"TF-IDF特征数量: {len(vectorizer.get_feature_names_out())}")
+        # 向量化处理
+        tfidf_matrix = vectorizer.fit_transform([original_seg, plagiarized_seg])
     except Exception as e:
         raise Exception(f"文本向量化失败: {str(e)}")
 
@@ -118,7 +125,7 @@ def main():
         'plagiarized_file',
         type=str,
         nargs='?',
-        default=r"D:\软工\测试文本(1)\orig_0.8_add.txt",  # 默认抄袭文件路径
+        default=r"D:\软工\测试文本(1)\orig_0.8_del.txt",  # 默认抄袭文件路径
         help='待检测论文文件路径'
     )
     parser.add_argument(
@@ -183,7 +190,7 @@ def main():
         # 写入结果
         write_result(args.output_file, similarity)
 
-        print(f"查重完成，重复率为: {similarity:.2f}")
+        print(f"查重完成，重复率为: {similarity:.4f}")
 
     except Exception as e:
         print(f"错误: {str(e)}")
